@@ -1,0 +1,48 @@
+1. Project Title
+Library Management System
+2. Problem Statement
+In many libraries, book records, issue details, and return details are maintained manually. This process is time-consuming and can lead to errors such as misplaced records, difficulty in tracking books, and delays in issuing or returning books. A Library Management System is required to automate these activities and efficiently manage library operations.
+3. Objective
+To automate library management activities.
+To maintain book and student/member records.
+To simplify book issue and return processes.
+To track available and borrowed books.
+To reduce manual work and improve accuracy.
+To generate reports quickly and efficiently.
+Modules
+1. Admin Module
+Manage books
+Manage students
+View reports
+System monitoring
+2. Book Inventory Module
+Add books
+Update book details
+Remove books
+Track book availability
+3. Member Management Module
+Register members
+Update member information
+Maintain member records
+4. Book Search Module
+Search books by title
+Search by author
+Search by category
+Check availability
+5. Book Issue Module
+Issue books to members
+Set due dates
+Record transactions
+6. Book Return Module
+Return books
+Calculate fines
+Update availability status
+7. Fine Management Module
+Calculate overdue fines
+Maintain fine records
+Generate fine reports
+8. Report Module
+Book issue report
+Return report
+Member report
+Fine collection report
