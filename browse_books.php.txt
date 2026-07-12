@@ -1,0 +1,93 @@
+<?php
+/**
+ * student/browse_books.php
+ * ---------------------------------------------------------------------
+ * A read-only, searchable catalog view for students, styled as book
+ * cards with a colored "spine" strip. Search covers title, author,
+ * ISBN, and category as required.
+ * ---------------------------------------------------------------------
+ */
+require_once __DIR__ . '/../config/config.php';
+require_role('student');
+
+$page_title = 'Browse Books';
+$active_nav = 'browse';
+
+$q = trim($_GET['q'] ?? '');
+$category_filter = $_GET['category'] ?? '';
+
+$sql = "SELECT b.*, c.category_name, a.author_name, p.publisher_name
+        FROM books b
+        LEFT JOIN categories c ON c.category_id = b.category_id
+        LEFT JOIN authors a ON a.author_id = b.author_id
+        LEFT JOIN publishers p ON p.publisher_id = b.publisher_id
+        WHERE 1=1";
+$params = [];
+if ($q !== '') {
+    $sql .= " AND (b.title LIKE ? OR a.author_name LIKE ? OR b.isbn LIKE ? OR c.category_name LIKE ?)";
+    $like = "%$q%";
+    array_push($params, $like, $like, $like, $like);
+}
+if ($category_filter !== '') {
+    $sql .= " AND b.category_id = ?";
+    $params[] = $category_filter;
+}
+$sql .= " ORDER BY b.title";
+$stmt = $pdo->prepare($sql);
+$stmt->execute($params);
+$books = $stmt->fetchAll();
+
+$categories = $pdo->query("SELECT * FROM categories ORDER BY category_name")->fetchAll();
+
+require_once __DIR__ . '/../includes/header.php';
+?>
+
+<div class="panel">
+    <form method="GET" class="row g-2 mb-2">
+        <div class="col-md-7">
+            <input type="text" name="q" class="form-control" placeholder="Search by title, author, ISBN, or category…" value="<?= h($q) ?>">
+        </div>
+        <div class="col-md-3">
+            <select name="category" class="form-select">
+                <option value="">All categories</option>
+                <?php foreach ($categories as $c): ?>
+                    <option value="<?= $c['category_id'] ?>" <?= $category_filter == $c['category_id'] ? 'selected' : '' ?>><?= h($c['category_name']) ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div class="col-md-2 d-grid">
+            <button class="btn btn-ink"><i class="fa-solid fa-magnifying-glass"></i> Search</button>
+        </div>
+    </form>
+</div>
+
+<?php if (!$books): ?>
+    <div class="panel empty-state"><i class="fa-solid fa-book-open"></i>No books match your search.</div>
+<?php else: ?>
+<div class="book-grid">
+    <?php foreach ($books as $b): ?>
+        <div class="book-card">
+            <div class="spine" style="background:<?= h($b['cover_color']) ?>;"></div>
+            <div class="book-body">
+                <div class="book-cat"><?= h($b['category_name'] ?? 'Uncategorized') ?></div>
+                <div class="book-title"><?= h($b['title']) ?></div>
+                <div class="book-author"><?= h($b['author_name'] ?? 'Unknown author') ?></div>
+                <div class="book-meta isbn">ISBN <?= h($b['isbn']) ?></div>
+                <div class="book-footer">
+                    <?php if ($b['available_copies'] > 0): ?>
+                        <span class="badge-soft badge-available"><?= $b['available_copies'] ?> available</span>
+                    <?php else: ?>
+                        <span class="badge-soft badge-outstock">Out of stock</span>
+                    <?php endif; ?>
+                    <span class="text-muted-ink" style="font-size:12px;"><?= h($b['publisher_name'] ?? '') ?></span>
+                </div>
+            </div>
+        </div>
+    <?php endforeach; ?>
+</div>
+<p class="text-muted-ink mt-3" style="font-size:13px;">
+    <i class="fa-solid fa-circle-info"></i> To borrow a book, please visit the library desk — an admin will issue it to your account.
+</p>
+<?php endif; ?>
+
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>

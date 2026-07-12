@@ -1,0 +1,135 @@
+<?php
+/**
+ * admin/authors.php
+ * ---------------------------------------------------------------------
+ * Full CRUD for authors, same modal pattern as categories.php.
+ * ---------------------------------------------------------------------
+ */
+require_once __DIR__ . '/../config/config.php';
+require_role('admin');
+
+$page_title = 'Authors';
+$active_nav = 'authors';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!csrf_verify($_POST['csrf_token'] ?? '')) {
+        set_flash('error', 'Invalid request token.');
+        header('Location: ' . BASE_URL . '/admin/authors.php');
+        exit;
+    }
+    $action = $_POST['action'] ?? '';
+
+    if ($action === 'save') {
+        $id = (int)($_POST['author_id'] ?? 0);
+        $name = trim($_POST['author_name'] ?? '');
+        $bio = trim($_POST['bio'] ?? '');
+
+        if ($name === '') {
+            set_flash('error', 'Author name is required.');
+        } elseif ($id) {
+            $pdo->prepare("UPDATE authors SET author_name=?, bio=? WHERE author_id=?")->execute([$name, $bio, $id]);
+            set_flash('success', 'Author updated.');
+        } else {
+            $pdo->prepare("INSERT INTO authors (author_name, bio) VALUES (?,?)")->execute([$name, $bio]);
+            set_flash('success', 'Author added.');
+        }
+    } elseif ($action === 'delete') {
+        $id = (int)($_POST['author_id'] ?? 0);
+        $inUse = $pdo->prepare("SELECT COUNT(*) FROM books WHERE author_id = ?");
+        $inUse->execute([$id]);
+        if ($inUse->fetchColumn() > 0) {
+            set_flash('error', 'Cannot delete: books are still assigned to this author.');
+        } else {
+            $pdo->prepare("DELETE FROM authors WHERE author_id=?")->execute([$id]);
+            set_flash('success', 'Author deleted.');
+        }
+    }
+    header('Location: ' . BASE_URL . '/admin/authors.php');
+    exit;
+}
+
+$authors = $pdo->query("
+    SELECT a.*, COUNT(b.book_id) AS book_count
+    FROM authors a LEFT JOIN books b ON b.author_id = a.author_id
+    GROUP BY a.author_id ORDER BY a.author_name
+")->fetchAll();
+
+require_once __DIR__ . '/../includes/header.php';
+?>
+
+<div class="panel">
+    <div class="panel-title">
+        <span>Authors</span>
+        <button class="btn btn-brass btn-sm" data-bs-toggle="modal" data-bs-target="#authorModal" onclick="openAuthorModal()"><i class="fa-solid fa-plus"></i> Add Author</button>
+    </div>
+
+    <?php if (!$authors): ?>
+        <div class="empty-state"><i class="fa-solid fa-feather"></i>No authors yet. Add your first one.</div>
+    <?php else: ?>
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead><tr><th>Name</th><th>Bio</th><th>Books</th><th></th></tr></thead>
+            <tbody>
+            <?php foreach ($authors as $a): ?>
+                <tr>
+                    <td style="font-weight:600;"><?= h($a['author_name']) ?></td>
+                    <td class="text-muted-ink"><?= h(mb_strimwidth($a['bio'] ?? '', 0, 70, '…')) ?></td>
+                    <td><?= (int)$a['book_count'] ?></td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-outline-ink" data-bs-toggle="modal" data-bs-target="#authorModal"
+                            onclick='openAuthorModal(<?= json_encode($a) ?>)'><i class="fa-solid fa-pen"></i></button>
+                        <form method="POST" class="d-inline" data-confirm="Delete author '<?= h($a['author_name']) ?>'?">
+                            <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+                            <input type="hidden" name="action" value="delete">
+                            <input type="hidden" name="author_id" value="<?= $a['author_id'] ?>">
+                            <button class="btn btn-sm btn-outline-ink text-danger"><i class="fa-solid fa-trash"></i></button>
+                        </form>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php endif; ?>
+</div>
+
+<div class="modal fade" id="authorModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content" style="border-radius:12px;">
+      <form method="POST">
+        <div class="modal-header">
+          <h5 class="modal-title font-display" id="authorModalTitle">Add Author</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+          <input type="hidden" name="action" value="save">
+          <input type="hidden" name="author_id" id="author_id" value="">
+          <div class="mb-3">
+            <label class="form-label">Author name</label>
+            <input type="text" name="author_name" id="author_name" class="form-control" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Short bio</label>
+            <textarea name="bio" id="author_bio" class="form-control" rows="3"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-ink" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-brass">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+function openAuthorModal(a) {
+    document.getElementById('authorModalTitle').textContent = a ? 'Edit Author' : 'Add Author';
+    document.getElementById('author_id').value = a ? a.author_id : '';
+    document.getElementById('author_name').value = a ? a.author_name : '';
+    document.getElementById('author_bio').value = a && a.bio ? a.bio : '';
+}
+</script>
+
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>

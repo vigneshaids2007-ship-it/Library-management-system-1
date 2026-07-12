@@ -1,0 +1,135 @@
+<?php
+/**
+ * student/my_books.php
+ * ---------------------------------------------------------------------
+ * Shows the logged-in student's current loans (with a self-service
+ * "Renew" option) and their return history.
+ * ---------------------------------------------------------------------
+ */
+require_once __DIR__ . '/../config/config.php';
+require_role('student');
+sync_overdue_fines($pdo);
+
+$page_title = 'My Books';
+$active_nav = 'my_books';
+$uid = $_SESSION['user_id'];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'renew') {
+    if (!csrf_verify($_POST['csrf_token'] ?? '')) {
+        set_flash('error', 'Invalid request token.');
+    } else {
+        $issue_id = (int)$_POST['issue_id'];
+        $stmt = $pdo->prepare("SELECT * FROM book_issues WHERE issue_id=? AND user_id=? AND status='issued'");
+        $stmt->execute([$issue_id, $uid]);
+        $issue = $stmt->fetch();
+
+        if (!$issue) {
+            set_flash('error', 'Loan record not found.');
+        } elseif (strtotime($issue['due_date']) < strtotime('today')) {
+            set_flash('error', 'This book is overdue — please return it or contact the library to renew.');
+        } elseif ($issue['renewed_count'] >= MAX_RENEWALS) {
+            set_flash('error', 'You have reached the maximum of ' . MAX_RENEWALS . ' renewals for this book.');
+        } else {
+            $newDue = (new DateTime($issue['due_date']))->modify('+' . LOAN_PERIOD_DAYS . ' days')->format('Y-m-d');
+            $pdo->prepare("UPDATE book_issues SET due_date=?, renewed_count = renewed_count + 1 WHERE issue_id=?")
+                ->execute([$newDue, $issue_id]);
+            set_flash('success', 'Renewed! New due date: ' . date('d M Y', strtotime($newDue)));
+        }
+    }
+    header('Location: ' . BASE_URL . '/student/my_books.php');
+    exit;
+}
+
+$current = $pdo->prepare("
+    SELECT bi.*, b.title, b.isbn, b.cover_color, a.author_name
+    FROM book_issues bi
+    JOIN books b ON b.book_id = bi.book_id
+    LEFT JOIN authors a ON a.author_id = b.author_id
+    WHERE bi.user_id = ? AND bi.status = 'issued'
+    ORDER BY bi.due_date ASC
+");
+$current->execute([$uid]);
+$current = $current->fetchAll();
+
+$history = $pdo->prepare("
+    SELECT bi.*, r.return_date, b.title, b.isbn
+    FROM book_issues bi
+    JOIN returns r ON r.issue_id = bi.issue_id
+    JOIN books b ON b.book_id = bi.book_id
+    WHERE bi.user_id = ? AND bi.status = 'returned'
+    ORDER BY r.return_date DESC
+    LIMIT 20
+");
+$history->execute([$uid]);
+$history = $history->fetchAll();
+
+require_once __DIR__ . '/../includes/header.php';
+?>
+
+<div class="panel">
+    <div class="panel-title"><span>Currently borrowed</span></div>
+    <?php if (!$current): ?>
+        <div class="empty-state"><i class="fa-solid fa-book-open"></i>Nothing checked out right now.</div>
+    <?php else: ?>
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead><tr><th>Book</th><th>Issued</th><th>Due</th><th>Status</th><th>Renewals</th><th></th></tr></thead>
+            <tbody>
+            <?php foreach ($current as $l): ?>
+                <tr>
+                    <td>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <span style="width:6px;height:26px;border-radius:3px;background:<?= h($l['cover_color']) ?>;display:inline-block;"></span>
+                            <div>
+                                <div style="font-weight:600;"><?= h($l['title']) ?></div>
+                                <div class="text-muted-ink" style="font-size:12px;"><?= h($l['author_name'] ?? '') ?></div>
+                            </div>
+                        </div>
+                    </td>
+                    <td class="due-date"><?= h($l['issue_date']) ?></td>
+                    <td class="due-date"><?= h($l['due_date']) ?></td>
+                    <td><?= due_status_badge($l['due_date'], $l['status']) ?></td>
+                    <td><?= (int)$l['renewed_count'] ?> / <?= MAX_RENEWALS ?></td>
+                    <td class="text-end">
+                        <form method="POST">
+                            <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+                            <input type="hidden" name="action" value="renew">
+                            <input type="hidden" name="issue_id" value="<?= $l['issue_id'] ?>">
+                            <button type="submit" class="btn btn-sm btn-outline-ink"
+                                <?= (strtotime($l['due_date']) < strtotime('today') || $l['renewed_count'] >= MAX_RENEWALS) ? 'disabled' : '' ?>>
+                                <i class="fa-solid fa-arrows-rotate"></i> Renew
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php endif; ?>
+</div>
+
+<div class="panel mb-0">
+    <div class="panel-title"><span>Borrowing history</span></div>
+    <?php if (!$history): ?>
+        <div class="empty-state"><i class="fa-solid fa-clock-rotate-left"></i>No past loans yet.</div>
+    <?php else: ?>
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead><tr><th>Book</th><th>Issued</th><th>Due</th><th>Returned</th></tr></thead>
+            <tbody>
+            <?php foreach ($history as $h): ?>
+                <tr>
+                    <td><?= h($h['title']) ?></td>
+                    <td class="due-date"><?= h($h['issue_date']) ?></td>
+                    <td class="due-date"><?= h($h['due_date']) ?></td>
+                    <td class="due-date"><?= h($h['return_date']) ?></td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php endif; ?>
+</div>
+
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>

@@ -1,0 +1,134 @@
+<?php
+/**
+ * admin/dashboard.php
+ * ---------------------------------------------------------------------
+ * Admin landing page: key statistics + recent activity + overdue alerts.
+ * ---------------------------------------------------------------------
+ */
+require_once __DIR__ . '/../config/config.php';
+require_role('admin');
+sync_overdue_fines($pdo);
+
+$page_title = 'Dashboard';
+$active_nav = 'dashboard';
+
+$total_books     = $pdo->query("SELECT COALESCE(SUM(total_copies),0) FROM books")->fetchColumn();
+$available_books = $pdo->query("SELECT COALESCE(SUM(available_copies),0) FROM books")->fetchColumn();
+$issued_books     = $pdo->query("SELECT COUNT(*) FROM book_issues WHERE status='issued'")->fetchColumn();
+$overdue_books    = $pdo->query("SELECT COUNT(*) FROM book_issues WHERE status='issued' AND due_date < CURDATE()")->fetchColumn();
+$total_students   = $pdo->query("SELECT COUNT(*) FROM users WHERE role='student'")->fetchColumn();
+$total_titles     = $pdo->query("SELECT COUNT(*) FROM books")->fetchColumn();
+$unpaid_fines     = $pdo->query("SELECT COALESCE(SUM(amount),0) FROM fines WHERE status='unpaid'")->fetchColumn();
+$returned_this_month = $pdo->query("SELECT COUNT(*) FROM returns WHERE MONTH(return_date)=MONTH(CURDATE()) AND YEAR(return_date)=YEAR(CURDATE())")->fetchColumn();
+
+$recent_issues = $pdo->query("
+    SELECT bi.*, b.title, u.full_name
+    FROM book_issues bi
+    JOIN books b ON b.book_id = bi.book_id
+    JOIN users u ON u.user_id = bi.user_id
+    ORDER BY bi.issue_date DESC, bi.issue_id DESC
+    LIMIT 6
+")->fetchAll();
+
+$overdue_list = $pdo->query("
+    SELECT bi.*, b.title, u.full_name, u.email
+    FROM book_issues bi
+    JOIN books b ON b.book_id = bi.book_id
+    JOIN users u ON u.user_id = bi.user_id
+    WHERE bi.status = 'issued' AND bi.due_date < CURDATE()
+    ORDER BY bi.due_date ASC
+    LIMIT 6
+")->fetchAll();
+
+require_once __DIR__ . '/../includes/header.php';
+?>
+
+<div class="stat-grid mb-4">
+    <div class="stat-card accent-brass">
+        <div class="stat-index">01</div>
+        <div class="stat-label">Titles in catalog</div>
+        <div class="stat-value"><?= number_format($total_titles) ?></div>
+        <div class="stat-sub"><?= number_format($total_books) ?> total copies</div>
+    </div>
+    <div class="stat-card accent-sage">
+        <div class="stat-index">02</div>
+        <div class="stat-label">Available copies</div>
+        <div class="stat-value"><?= number_format($available_books) ?></div>
+        <div class="stat-sub">Ready to be issued</div>
+    </div>
+    <div class="stat-card accent-ink">
+        <div class="stat-index">03</div>
+        <div class="stat-label">Currently issued</div>
+        <div class="stat-value"><?= number_format($issued_books) ?></div>
+        <div class="stat-sub"><?= number_format($returned_this_month) ?> returned this month</div>
+    </div>
+    <div class="stat-card accent-terracotta">
+        <div class="stat-index">04</div>
+        <div class="stat-label">Overdue books</div>
+        <div class="stat-value"><?= number_format($overdue_books) ?></div>
+        <div class="stat-sub"><?= money($unpaid_fines) ?> in unpaid fines</div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-7">
+        <div class="panel">
+            <div class="panel-title">
+                <span>Recent circulation</span>
+                <a href="<?= BASE_URL ?>/admin/issue_book.php" class="btn btn-brass btn-sm"><i class="fa-solid fa-plus"></i> Issue Book</a>
+            </div>
+            <?php if (!$recent_issues): ?>
+                <div class="empty-state"><i class="fa-solid fa-book"></i>No books have been issued yet.</div>
+            <?php else: ?>
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead><tr><th>Book</th><th>Student</th><th>Issued</th><th>Due</th><th>Status</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($recent_issues as $r): ?>
+                        <tr>
+                            <td><?= h($r['title']) ?></td>
+                            <td><?= h($r['full_name']) ?></td>
+                            <td class="due-date"><?= h($r['issue_date']) ?></td>
+                            <td class="due-date"><?= h($r['due_date']) ?></td>
+                            <td><?= due_status_badge($r['due_date'], $r['status']) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="panel">
+            <div class="panel-title">
+                <span>Overdue right now</span>
+                <a href="<?= BASE_URL ?>/admin/reports.php?type=overdue" class="btn btn-outline-ink btn-sm">View all</a>
+            </div>
+            <?php if (!$overdue_list): ?>
+                <div class="empty-state"><i class="fa-solid fa-circle-check"></i>Nothing overdue — nice and tidy.</div>
+            <?php else: foreach ($overdue_list as $o): ?>
+                <div class="d-flex justify-content-between align-items-start py-2" style="border-bottom:1px solid var(--hairline);">
+                    <div>
+                        <div style="font-weight:600; font-size:14px;"><?= h($o['title']) ?></div>
+                        <div class="text-muted-ink" style="font-size:12.5px;"><?= h($o['full_name']) ?> · <?= h($o['email']) ?></div>
+                    </div>
+                    <?= due_status_badge($o['due_date'], $o['status']) ?>
+                </div>
+            <?php endforeach; endif; ?>
+        </div>
+
+        <div class="panel mb-0">
+            <div class="panel-title"><span>Quick actions</span></div>
+            <div class="d-grid gap-2">
+                <a href="<?= BASE_URL ?>/admin/books.php?action=add" class="btn btn-outline-ink btn-sm text-start"><i class="fa-solid fa-book-medical me-2"></i>Add a new book</a>
+                <a href="<?= BASE_URL ?>/admin/students.php?action=add" class="btn btn-outline-ink btn-sm text-start"><i class="fa-solid fa-user-plus me-2"></i>Register a student</a>
+                <a href="<?= BASE_URL ?>/admin/returns.php" class="btn btn-outline-ink btn-sm text-start"><i class="fa-solid fa-rotate-left me-2"></i>Process a return</a>
+                <a href="<?= BASE_URL ?>/admin/reports.php" class="btn btn-outline-ink btn-sm text-start"><i class="fa-solid fa-file-lines me-2"></i>Generate a report</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>

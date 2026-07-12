@@ -1,0 +1,201 @@
+<?php
+/**
+ * admin/book_form.php
+ * ---------------------------------------------------------------------
+ * Add or edit a book. If ?id=N is present we're editing; otherwise
+ * we're creating a new record. Also allows on-the-fly creation of a
+ * category/author/publisher isn't included here to keep this focused -
+ * use the dedicated pages for that, then come back and pick from the list.
+ * ---------------------------------------------------------------------
+ */
+require_once __DIR__ . '/../config/config.php';
+require_role('admin');
+
+$editing = isset($_GET['id']);
+$book_id = $editing ? (int)$_GET['id'] : null;
+
+$book = [
+    'title' => '', 'isbn' => '', 'category_id' => '', 'author_id' => '', 'publisher_id' => '',
+    'edition' => '', 'rack_no' => '', 'price' => '', 'total_copies' => 1, 'available_copies' => 1,
+    'cover_color' => '#3D5A80', 'description' => ''
+];
+
+if ($editing) {
+    $stmt = $pdo->prepare("SELECT * FROM books WHERE book_id = ?");
+    $stmt->execute([$book_id]);
+    $found = $stmt->fetch();
+    if (!$found) {
+        set_flash('error', 'Book not found.');
+        header('Location: ' . BASE_URL . '/admin/books.php');
+        exit;
+    }
+    $book = $found;
+}
+
+$errors = [];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $book['title']            = trim($_POST['title'] ?? '');
+    $book['isbn']              = trim($_POST['isbn'] ?? '');
+    $book['category_id']       = $_POST['category_id'] ?: null;
+    $book['author_id']         = $_POST['author_id'] ?: null;
+    $book['publisher_id']      = $_POST['publisher_id'] ?: null;
+    $book['edition']           = trim($_POST['edition'] ?? '');
+    $book['rack_no']           = trim($_POST['rack_no'] ?? '');
+    $book['price']             = $_POST['price'] !== '' ? (float)$_POST['price'] : 0;
+    $book['total_copies']      = max(1, (int)($_POST['total_copies'] ?? 1));
+    $book['cover_color']       = $_POST['cover_color'] ?: '#3D5A80';
+    $book['description']       = trim($_POST['description'] ?? '');
+
+    if ($book['title'] === '' || $book['isbn'] === '') {
+        $errors[] = 'Title and ISBN are required.';
+    }
+
+    // Compute available_copies: preserve number already checked out
+    if ($editing) {
+        $checked_out = $found['total_copies'] - $found['available_copies'];
+        $book['available_copies'] = max(0, $book['total_copies'] - $checked_out);
+    } else {
+        $book['available_copies'] = $book['total_copies'];
+    }
+
+    if (!$errors) {
+        $dupe = $pdo->prepare("SELECT book_id FROM books WHERE isbn = ? AND book_id != ?");
+        $dupe->execute([$book['isbn'], $book_id ?? 0]);
+        if ($dupe->fetch()) {
+            $errors[] = 'Another book already uses this ISBN.';
+        }
+    }
+
+    if (!$errors) {
+        if ($editing) {
+            $stmt = $pdo->prepare("UPDATE books SET title=?, isbn=?, category_id=?, author_id=?, publisher_id=?,
+                                    edition=?, rack_no=?, price=?, total_copies=?, available_copies=?, cover_color=?, description=?
+                                    WHERE book_id=?");
+            $stmt->execute([
+                $book['title'], $book['isbn'], $book['category_id'], $book['author_id'], $book['publisher_id'],
+                $book['edition'], $book['rack_no'], $book['price'], $book['total_copies'], $book['available_copies'],
+                $book['cover_color'], $book['description'], $book_id
+            ]);
+            set_flash('success', 'Book updated successfully.');
+        } else {
+            $stmt = $pdo->prepare("INSERT INTO books (title, isbn, category_id, author_id, publisher_id, edition, rack_no,
+                                    price, total_copies, available_copies, cover_color, description)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
+            $stmt->execute([
+                $book['title'], $book['isbn'], $book['category_id'], $book['author_id'], $book['publisher_id'],
+                $book['edition'], $book['rack_no'], $book['price'], $book['total_copies'], $book['available_copies'],
+                $book['cover_color'], $book['description']
+            ]);
+            set_flash('success', 'Book added successfully.');
+        }
+        header('Location: ' . BASE_URL . '/admin/books.php');
+        exit;
+    }
+}
+
+$categories = $pdo->query("SELECT * FROM categories ORDER BY category_name")->fetchAll();
+$authors = $pdo->query("SELECT * FROM authors ORDER BY author_name")->fetchAll();
+$publishers = $pdo->query("SELECT * FROM publishers ORDER BY publisher_name")->fetchAll();
+
+$page_title = $editing ? 'Edit Book' : 'Add Book';
+$active_nav = 'books';
+require_once __DIR__ . '/../includes/header.php';
+?>
+
+<div class="panel" style="max-width:820px;">
+    <div class="panel-title">
+        <span><?= $editing ? 'Edit book details' : 'Add a new book' ?></span>
+        <a href="<?= BASE_URL ?>/admin/books.php" class="btn btn-outline-ink btn-sm"><i class="fa-solid fa-arrow-left"></i> Back to catalog</a>
+    </div>
+
+    <?php foreach ($errors as $err): ?>
+        <div class="alert alert-danger app-alert"><?= h($err) ?></div>
+    <?php endforeach; ?>
+
+    <form method="POST" class="needs-validation" novalidate>
+        <div class="row">
+            <div class="col-md-8 mb-3">
+                <label class="form-label">Title</label>
+                <input type="text" name="title" class="form-control" value="<?= h($book['title']) ?>" required>
+                <div class="invalid-feedback">Please enter the book title.</div>
+            </div>
+            <div class="col-md-4 mb-3">
+                <label class="form-label">ISBN</label>
+                <input type="text" name="isbn" class="form-control isbn" value="<?= h($book['isbn']) ?>" required>
+                <div class="invalid-feedback">Please enter the ISBN.</div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-4 mb-3">
+                <label class="form-label">Category</label>
+                <select name="category_id" class="form-select">
+                    <option value="">— Select —</option>
+                    <?php foreach ($categories as $c): ?>
+                        <option value="<?= $c['category_id'] ?>" <?= $book['category_id'] == $c['category_id'] ? 'selected' : '' ?>><?= h($c['category_name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="col-md-4 mb-3">
+                <label class="form-label">Author</label>
+                <select name="author_id" class="form-select">
+                    <option value="">— Select —</option>
+                    <?php foreach ($authors as $a): ?>
+                        <option value="<?= $a['author_id'] ?>" <?= $book['author_id'] == $a['author_id'] ? 'selected' : '' ?>><?= h($a['author_name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="col-md-4 mb-3">
+                <label class="form-label">Publisher</label>
+                <select name="publisher_id" class="form-select">
+                    <option value="">— Select —</option>
+                    <?php foreach ($publishers as $p): ?>
+                        <option value="<?= $p['publisher_id'] ?>" <?= $book['publisher_id'] == $p['publisher_id'] ? 'selected' : '' ?>><?= h($p['publisher_name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-3 mb-3">
+                <label class="form-label">Edition</label>
+                <input type="text" name="edition" class="form-control" value="<?= h($book['edition']) ?>">
+            </div>
+            <div class="col-md-3 mb-3">
+                <label class="form-label">Rack no.</label>
+                <input type="text" name="rack_no" class="form-control" value="<?= h($book['rack_no']) ?>">
+            </div>
+            <div class="col-md-3 mb-3">
+                <label class="form-label">Price</label>
+                <input type="number" step="0.01" min="0" name="price" class="form-control" value="<?= h($book['price']) ?>">
+            </div>
+            <div class="col-md-3 mb-3">
+                <label class="form-label">Total copies</label>
+                <input type="number" min="1" name="total_copies" class="form-control" value="<?= h($book['total_copies']) ?>" required>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-3 mb-3">
+                <label class="form-label">Spine color</label>
+                <input type="color" name="cover_color" class="form-control form-control-color w-100" value="<?= h($book['cover_color']) ?>">
+            </div>
+            <div class="col-md-9 mb-3">
+                <label class="form-label">Description</label>
+                <textarea name="description" class="form-control" rows="1"><?= h($book['description']) ?></textarea>
+            </div>
+        </div>
+
+        <?php if ($editing): ?>
+        <p class="text-muted-ink" style="font-size:12.5px;">
+            <i class="fa-solid fa-circle-info"></i> Copies currently issued are preserved automatically when you change the total copy count.
+        </p>
+        <?php endif; ?>
+
+        <button type="submit" class="btn btn-brass"><?= $editing ? 'Save changes' : 'Add book' ?></button>
+        <a href="<?= BASE_URL ?>/admin/books.php" class="btn btn-outline-ink">Cancel</a>
+    </form>
+</div>
+
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>

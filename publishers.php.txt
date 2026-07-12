@@ -1,0 +1,144 @@
+<?php
+/**
+ * admin/publishers.php
+ * ---------------------------------------------------------------------
+ * Full CRUD for publishers, same modal pattern as categories.php.
+ * ---------------------------------------------------------------------
+ */
+require_once __DIR__ . '/../config/config.php';
+require_role('admin');
+
+$page_title = 'Publishers';
+$active_nav = 'publishers';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!csrf_verify($_POST['csrf_token'] ?? '')) {
+        set_flash('error', 'Invalid request token.');
+        header('Location: ' . BASE_URL . '/admin/publishers.php');
+        exit;
+    }
+    $action = $_POST['action'] ?? '';
+
+    if ($action === 'save') {
+        $id = (int)($_POST['publisher_id'] ?? 0);
+        $name = trim($_POST['publisher_name'] ?? '');
+        $email = trim($_POST['contact_email'] ?? '');
+        $phone = trim($_POST['phone'] ?? '');
+
+        if ($name === '') {
+            set_flash('error', 'Publisher name is required.');
+        } elseif ($id) {
+            $pdo->prepare("UPDATE publishers SET publisher_name=?, contact_email=?, phone=? WHERE publisher_id=?")
+                ->execute([$name, $email, $phone, $id]);
+            set_flash('success', 'Publisher updated.');
+        } else {
+            $pdo->prepare("INSERT INTO publishers (publisher_name, contact_email, phone) VALUES (?,?,?)")
+                ->execute([$name, $email, $phone]);
+            set_flash('success', 'Publisher added.');
+        }
+    } elseif ($action === 'delete') {
+        $id = (int)($_POST['publisher_id'] ?? 0);
+        $inUse = $pdo->prepare("SELECT COUNT(*) FROM books WHERE publisher_id = ?");
+        $inUse->execute([$id]);
+        if ($inUse->fetchColumn() > 0) {
+            set_flash('error', 'Cannot delete: books are still assigned to this publisher.');
+        } else {
+            $pdo->prepare("DELETE FROM publishers WHERE publisher_id=?")->execute([$id]);
+            set_flash('success', 'Publisher deleted.');
+        }
+    }
+    header('Location: ' . BASE_URL . '/admin/publishers.php');
+    exit;
+}
+
+$publishers = $pdo->query("
+    SELECT p.*, COUNT(b.book_id) AS book_count
+    FROM publishers p LEFT JOIN books b ON b.publisher_id = p.publisher_id
+    GROUP BY p.publisher_id ORDER BY p.publisher_name
+")->fetchAll();
+
+require_once __DIR__ . '/../includes/header.php';
+?>
+
+<div class="panel">
+    <div class="panel-title">
+        <span>Publishers</span>
+        <button class="btn btn-brass btn-sm" data-bs-toggle="modal" data-bs-target="#pubModal" onclick="openPubModal()"><i class="fa-solid fa-plus"></i> Add Publisher</button>
+    </div>
+
+    <?php if (!$publishers): ?>
+        <div class="empty-state"><i class="fa-solid fa-building"></i>No publishers yet. Add your first one.</div>
+    <?php else: ?>
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead><tr><th>Name</th><th>Contact email</th><th>Phone</th><th>Books</th><th></th></tr></thead>
+            <tbody>
+            <?php foreach ($publishers as $p): ?>
+                <tr>
+                    <td style="font-weight:600;"><?= h($p['publisher_name']) ?></td>
+                    <td class="text-muted-ink"><?= h($p['contact_email'] ?: '—') ?></td>
+                    <td class="text-muted-ink"><?= h($p['phone'] ?: '—') ?></td>
+                    <td><?= (int)$p['book_count'] ?></td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-outline-ink" data-bs-toggle="modal" data-bs-target="#pubModal"
+                            onclick='openPubModal(<?= json_encode($p) ?>)'><i class="fa-solid fa-pen"></i></button>
+                        <form method="POST" class="d-inline" data-confirm="Delete publisher '<?= h($p['publisher_name']) ?>'?">
+                            <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+                            <input type="hidden" name="action" value="delete">
+                            <input type="hidden" name="publisher_id" value="<?= $p['publisher_id'] ?>">
+                            <button class="btn btn-sm btn-outline-ink text-danger"><i class="fa-solid fa-trash"></i></button>
+                        </form>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php endif; ?>
+</div>
+
+<div class="modal fade" id="pubModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content" style="border-radius:12px;">
+      <form method="POST">
+        <div class="modal-header">
+          <h5 class="modal-title font-display" id="pubModalTitle">Add Publisher</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+          <input type="hidden" name="action" value="save">
+          <input type="hidden" name="publisher_id" id="pub_id" value="">
+          <div class="mb-3">
+            <label class="form-label">Publisher name</label>
+            <input type="text" name="publisher_name" id="pub_name" class="form-control" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Contact email</label>
+            <input type="email" name="contact_email" id="pub_email" class="form-control">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Phone</label>
+            <input type="text" name="phone" id="pub_phone" class="form-control">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-ink" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-brass">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+function openPubModal(p) {
+    document.getElementById('pubModalTitle').textContent = p ? 'Edit Publisher' : 'Add Publisher';
+    document.getElementById('pub_id').value = p ? p.publisher_id : '';
+    document.getElementById('pub_name').value = p ? p.publisher_name : '';
+    document.getElementById('pub_email').value = p && p.contact_email ? p.contact_email : '';
+    document.getElementById('pub_phone').value = p && p.phone ? p.phone : '';
+}
+</script>
+
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>

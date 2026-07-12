@@ -1,0 +1,32 @@
+<?php
+/**
+ * database.php
+ * ---------------------------------------------------------------------
+ * Creates a single PDO connection to the MySQL database.
+ * Edit the constants below to match your local MySQL setup.
+ * ---------------------------------------------------------------------
+ */
+
+define('DB_HOST', 'localhost');
+define('DB_NAME', 'library_db');
+define('DB_USER', 'root');
+define('DB_PASS', '');
+
+try {
+    $pdo = new PDO(
+        "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4",
+        DB_USER,
+        DB_PASS,
+        [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES   => false,
+        ]
+    );
+} catch (PDOException $e) {
+    die('<div style="font-family:sans-serif;padding:40px;color:#7A2E2E;">
+            <h2>Database Connection Failed</h2>
+            <p>Please make sure MySQL is running and that you imported <code>sql/library_db.sql</code>.</p>
+            <p style="color:#999;font-size:13px;">' . htmlspecialchars($e->getMessage()) . '</p>
+        </div>');
+}

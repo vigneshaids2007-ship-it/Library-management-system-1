@@ -1,0 +1,142 @@
+<?php
+/**
+ * admin/categories.php
+ * ---------------------------------------------------------------------
+ * Full CRUD for book categories on a single page, using Bootstrap
+ * modals for add/edit so the admin never leaves the list view.
+ * ---------------------------------------------------------------------
+ */
+require_once __DIR__ . '/../config/config.php';
+require_role('admin');
+
+$page_title = 'Categories';
+$active_nav = 'categories';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!csrf_verify($_POST['csrf_token'] ?? '')) {
+        set_flash('error', 'Invalid request token.');
+        header('Location: ' . BASE_URL . '/admin/categories.php');
+        exit;
+    }
+
+    $action = $_POST['action'] ?? '';
+
+    if ($action === 'save') {
+        $id = (int)($_POST['category_id'] ?? 0);
+        $name = trim($_POST['category_name'] ?? '');
+        $desc = trim($_POST['description'] ?? '');
+
+        if ($name === '') {
+            set_flash('error', 'Category name is required.');
+        } else {
+            if ($id) {
+                $stmt = $pdo->prepare("UPDATE categories SET category_name=?, description=? WHERE category_id=?");
+                $stmt->execute([$name, $desc, $id]);
+                set_flash('success', 'Category updated.');
+            } else {
+                $stmt = $pdo->prepare("INSERT INTO categories (category_name, description) VALUES (?,?)");
+                $stmt->execute([$name, $desc]);
+                set_flash('success', 'Category added.');
+            }
+        }
+    } elseif ($action === 'delete') {
+        $id = (int)($_POST['category_id'] ?? 0);
+        $inUse = $pdo->prepare("SELECT COUNT(*) FROM books WHERE category_id = ?");
+        $inUse->execute([$id]);
+        if ($inUse->fetchColumn() > 0) {
+            set_flash('error', 'Cannot delete: books are still assigned to this category.');
+        } else {
+            $pdo->prepare("DELETE FROM categories WHERE category_id=?")->execute([$id]);
+            set_flash('success', 'Category deleted.');
+        }
+    }
+    header('Location: ' . BASE_URL . '/admin/categories.php');
+    exit;
+}
+
+$categories = $pdo->query("
+    SELECT c.*, COUNT(b.book_id) AS book_count
+    FROM categories c LEFT JOIN books b ON b.category_id = c.category_id
+    GROUP BY c.category_id ORDER BY c.category_name
+")->fetchAll();
+
+require_once __DIR__ . '/../includes/header.php';
+?>
+
+<div class="panel">
+    <div class="panel-title">
+        <span>Categories</span>
+        <button class="btn btn-brass btn-sm" data-bs-toggle="modal" data-bs-target="#catModal" onclick="openCatModal()"><i class="fa-solid fa-plus"></i> Add Category</button>
+    </div>
+
+    <?php if (!$categories): ?>
+        <div class="empty-state"><i class="fa-solid fa-tags"></i>No categories yet. Add your first one.</div>
+    <?php else: ?>
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead><tr><th>Name</th><th>Description</th><th>Books</th><th></th></tr></thead>
+            <tbody>
+            <?php foreach ($categories as $c): ?>
+                <tr>
+                    <td style="font-weight:600;"><?= h($c['category_name']) ?></td>
+                    <td class="text-muted-ink"><?= h($c['description'] ?: '—') ?></td>
+                    <td><?= (int)$c['book_count'] ?></td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-outline-ink" data-bs-toggle="modal" data-bs-target="#catModal"
+                            onclick='openCatModal(<?= json_encode($c) ?>)'><i class="fa-solid fa-pen"></i></button>
+                        <form method="POST" class="d-inline" data-confirm="Delete category '<?= h($c['category_name']) ?>'?">
+                            <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+                            <input type="hidden" name="action" value="delete">
+                            <input type="hidden" name="category_id" value="<?= $c['category_id'] ?>">
+                            <button class="btn btn-sm btn-outline-ink text-danger"><i class="fa-solid fa-trash"></i></button>
+                        </form>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php endif; ?>
+</div>
+
+<!-- Add/Edit Modal -->
+<div class="modal fade" id="catModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content" style="border-radius:12px;">
+      <form method="POST">
+        <div class="modal-header">
+          <h5 class="modal-title font-display" id="catModalTitle">Add Category</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+          <input type="hidden" name="action" value="save">
+          <input type="hidden" name="category_id" id="cat_id" value="">
+          <div class="mb-3">
+            <label class="form-label">Category name</label>
+            <input type="text" name="category_name" id="cat_name" class="form-control" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Description</label>
+            <textarea name="description" id="cat_desc" class="form-control" rows="2"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-ink" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-brass">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+function openCatModal(cat) {
+    document.getElementById('catModalTitle').textContent = cat ? 'Edit Category' : 'Add Category';
+    document.getElementById('cat_id').value = cat ? cat.category_id : '';
+    document.getElementById('cat_name').value = cat ? cat.category_name : '';
+    document.getElementById('cat_desc').value = cat && cat.description ? cat.description : '';
+}
+</script>
+
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>

@@ -1,0 +1,142 @@
+<?php
+/**
+ * admin/returns.php
+ * ---------------------------------------------------------------------
+ * Lists all currently issued books and lets the admin:
+ *  - Return a book: creates a `returns` row, marks the issue returned,
+ *    increments available_copies, and raises a fine if it was late.
+ *  - Renew a book: pushes the due date out by LOAN_PERIOD_DAYS, up to
+ *    MAX_RENEWALS times, and only if it isn't already overdue.
+ * ---------------------------------------------------------------------
+ */
+require_once __DIR__ . '/../config/config.php';
+require_role('admin');
+sync_overdue_fines($pdo);
+
+$page_title = 'Returns & Renewals';
+$active_nav = 'returns';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!csrf_verify($_POST['csrf_token'] ?? '')) {
+        set_flash('error', 'Invalid request token.');
+        header('Location: ' . BASE_URL . '/admin/returns.php');
+        exit;
+    }
+
+    $issue_id = (int)($_POST['issue_id'] ?? 0);
+    $action = $_POST['action'] ?? '';
+
+    $stmt = $pdo->prepare("SELECT * FROM book_issues WHERE issue_id = ? AND status = 'issued'");
+    $stmt->execute([$issue_id]);
+    $issue = $stmt->fetch();
+
+    if (!$issue) {
+        set_flash('error', 'Issue record not found or already closed.');
+    } elseif ($action === 'return') {
+        $today = date('Y-m-d');
+        $fineAmount = calculate_fine($issue['due_date'], $today);
+
+        $pdo->beginTransaction();
+        try {
+            $pdo->prepare("UPDATE book_issues SET status='returned' WHERE issue_id=?")->execute([$issue_id]);
+            $pdo->prepare("INSERT INTO returns (issue_id, return_date, received_by) VALUES (?, ?, ?)")
+                ->execute([$issue_id, $today, $_SESSION['user_id']]);
+            $pdo->prepare("UPDATE books SET available_copies = available_copies + 1 WHERE book_id=?")
+                ->execute([$issue['book_id']]);
+
+            if ($fineAmount > 0) {
+                $pdo->prepare("INSERT INTO fines (issue_id, user_id, amount, reason, status) VALUES (?,?,?,?,'unpaid')")
+                    ->execute([$issue_id, $issue['user_id'], $fineAmount, 'Late return']);
+            }
+
+            $pdo->commit();
+            set_flash('success', 'Book marked as returned.' . ($fineAmount > 0 ? ' A fine of ' . strip_tags(money($fineAmount)) . ' was applied.' : ''));
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            set_flash('error', 'Something went wrong while processing the return.');
+        }
+    } elseif ($action === 'renew') {
+        $isOverdue = strtotime($issue['due_date']) < strtotime('today');
+        if ($isOverdue) {
+            set_flash('error', 'Cannot renew: this book is overdue. Please return it or clear the fine first.');
+        } elseif ($issue['renewed_count'] >= MAX_RENEWALS) {
+            set_flash('error', 'Renewal limit reached for this loan (' . MAX_RENEWALS . ' max).');
+        } else {
+            $newDue = (new DateTime($issue['due_date']))->modify('+' . LOAN_PERIOD_DAYS . ' days')->format('Y-m-d');
+            $pdo->prepare("UPDATE book_issues SET due_date=?, renewed_count = renewed_count + 1 WHERE issue_id=?")
+                ->execute([$newDue, $issue_id]);
+            set_flash('success', 'Loan renewed. New due date: ' . date('d M Y', strtotime($newDue)));
+        }
+    }
+    header('Location: ' . BASE_URL . '/admin/returns.php');
+    exit;
+}
+
+$filter = $_GET['filter'] ?? 'issued';
+$where = $filter === 'overdue' ? "AND bi.due_date < CURDATE()" : "";
+
+$issues = $pdo->query("
+    SELECT bi.*, b.title, b.isbn, u.full_name, u.email
+    FROM book_issues bi
+    JOIN books b ON b.book_id = bi.book_id
+    JOIN users u ON u.user_id = bi.user_id
+    WHERE bi.status = 'issued' $where
+    ORDER BY bi.due_date ASC
+")->fetchAll();
+
+require_once __DIR__ . '/../includes/header.php';
+?>
+
+<div class="panel">
+    <div class="panel-title">
+        <span>Active loans</span>
+        <div class="btn-group btn-group-sm">
+            <a href="?filter=issued" class="btn <?= $filter==='issued' ? 'btn-ink' : 'btn-outline-ink' ?>">All</a>
+            <a href="?filter=overdue" class="btn <?= $filter==='overdue' ? 'btn-ink' : 'btn-outline-ink' ?>">Overdue only</a>
+        </div>
+    </div>
+
+    <?php if (!$issues): ?>
+        <div class="empty-state"><i class="fa-solid fa-circle-check"></i>Nothing to show here.</div>
+    <?php else: ?>
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead><tr><th>Book</th><th>Student</th><th>Issued</th><th>Due</th><th>Status</th><th>Renewals</th><th></th></tr></thead>
+            <tbody>
+            <?php foreach ($issues as $i): ?>
+                <tr>
+                    <td>
+                        <div style="font-weight:600;"><?= h($i['title']) ?></div>
+                        <div class="text-muted-ink isbn" style="font-size:11.5px;"><?= h($i['isbn']) ?></div>
+                    </td>
+                    <td>
+                        <div><?= h($i['full_name']) ?></div>
+                        <div class="text-muted-ink" style="font-size:12px;"><?= h($i['email']) ?></div>
+                    </td>
+                    <td class="due-date"><?= h($i['issue_date']) ?></td>
+                    <td class="due-date"><?= h($i['due_date']) ?></td>
+                    <td><?= due_status_badge($i['due_date'], $i['status']) ?></td>
+                    <td><?= (int)$i['renewed_count'] ?> / <?= MAX_RENEWALS ?></td>
+                    <td class="text-end" style="white-space:nowrap;">
+                        <form method="POST" class="d-inline">
+                            <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+                            <input type="hidden" name="issue_id" value="<?= $i['issue_id'] ?>">
+                            <input type="hidden" name="action" value="renew">
+                            <button type="submit" class="btn btn-sm btn-outline-ink"><i class="fa-solid fa-arrows-rotate"></i> Renew</button>
+                        </form>
+                        <form method="POST" class="d-inline" data-confirm="Mark '<?= h($i['title']) ?>' as returned?">
+                            <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+                            <input type="hidden" name="issue_id" value="<?= $i['issue_id'] ?>">
+                            <input type="hidden" name="action" value="return">
+                            <button type="submit" class="btn btn-sm btn-brass"><i class="fa-solid fa-check"></i> Return</button>
+                        </form>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php endif; ?>
+</div>
+
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>

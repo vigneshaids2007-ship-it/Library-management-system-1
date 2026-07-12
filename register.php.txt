@@ -1,0 +1,141 @@
+<?php
+/**
+ * auth/register.php
+ * ---------------------------------------------------------------------
+ * Public self-registration for students. Admin accounts are created
+ * directly by another admin (see admin/students.php) and cannot be
+ * self-registered through this form.
+ * ---------------------------------------------------------------------
+ */
+require_once __DIR__ . '/../config/config.php';
+
+if (is_logged_in()) {
+    header('Location: ' . BASE_URL . '/index.php');
+    exit;
+}
+
+$errors = [];
+$old = ['full_name' => '', 'email' => '', 'phone' => '', 'roll_number' => ''];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $old['full_name']   = trim($_POST['full_name'] ?? '');
+    $old['email']       = trim($_POST['email'] ?? '');
+    $old['phone']       = trim($_POST['phone'] ?? '');
+    $old['roll_number'] = trim($_POST['roll_number'] ?? '');
+    $password  = $_POST['password'] ?? '';
+    $confirm   = $_POST['confirm_password'] ?? '';
+
+    if ($old['full_name'] === '' || $old['email'] === '' || $password === '') {
+        $errors[] = 'Full name, email, and password are required.';
+    }
+    if (!filter_var($old['email'], FILTER_VALIDATE_EMAIL)) {
+        $errors[] = 'Please enter a valid email address.';
+    }
+    if (strlen($password) < 6) {
+        $errors[] = 'Password must be at least 6 characters long.';
+    }
+    if ($password !== $confirm) {
+        $errors[] = 'Passwords do not match.';
+    }
+
+    if (!$errors) {
+        $check = $pdo->prepare("SELECT user_id FROM users WHERE email = ?");
+        $check->execute([$old['email']]);
+        if ($check->fetch()) {
+            $errors[] = 'An account with this email already exists.';
+        }
+    }
+
+    if (!$errors) {
+        $hash = password_hash($password, PASSWORD_BCRYPT);
+        $stmt = $pdo->prepare("INSERT INTO users (full_name, email, password, role, phone, roll_number, status)
+                                VALUES (?, ?, ?, 'student', ?, ?, 'active')");
+        $stmt->execute([$old['full_name'], $old['email'], $hash, $old['phone'] ?: null, $old['roll_number'] ?: null]);
+
+        set_flash('success', 'Account created successfully. Please sign in.');
+        header('Location: ' . BASE_URL . '/auth/login.php');
+        exit;
+    }
+}
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Create Account · Athenaeum LMS</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<link rel="stylesheet" href="<?= BASE_URL ?>/assets/css/style.css">
+</head>
+<body>
+<div class="auth-shell">
+    <div class="auth-visual">
+        <div class="eyebrow">Athenaeum Library</div>
+        <h1>Join the reading list.</h1>
+        <p>Create a student account to browse the catalog, borrow titles, and keep an eye on your due dates from anywhere.</p>
+        <div class="shelf-stats">
+            <div><strong>Free</strong><span>Student accounts</span></div>
+            <div><strong>14 days</strong><span>Standard loan period</span></div>
+            <div><strong>Instant</strong><span>Book search</span></div>
+        </div>
+    </div>
+    <div class="auth-form-side">
+        <div class="auth-card">
+            <div class="brand-mark">
+                <div class="glyph">A</div>
+                <span class="font-display fw-semibold fs-4">Athenaeum</span>
+            </div>
+            <h2>Create your account</h2>
+            <p class="sub">Register as a student to start borrowing</p>
+
+            <?php foreach ($errors as $err): ?>
+                <div class="alert alert-danger app-alert"><?= h($err) ?></div>
+            <?php endforeach; ?>
+
+            <form method="POST" class="needs-validation" novalidate>
+                <div class="mb-3">
+                    <label class="form-label">Full name</label>
+                    <input type="text" name="full_name" class="form-control" value="<?= h($old['full_name']) ?>" required>
+                    <div class="invalid-feedback">Please enter your full name.</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Email address</label>
+                    <input type="email" name="email" class="form-control" value="<?= h($old['email']) ?>" required>
+                    <div class="invalid-feedback">Please enter a valid email.</div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label">Phone</label>
+                        <input type="text" name="phone" class="form-control" value="<?= h($old['phone']) ?>">
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label">Roll / ID number</label>
+                        <input type="text" name="roll_number" class="form-control" value="<?= h($old['roll_number']) ?>">
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label">Password</label>
+                        <input type="password" id="password" name="password" class="form-control" minlength="6" required>
+                        <div class="invalid-feedback">Minimum 6 characters.</div>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label">Confirm password</label>
+                        <input type="password" id="confirm_password" name="confirm_password" class="form-control" required>
+                        <div class="invalid-feedback">Passwords must match.</div>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-brass w-100">Create account</button>
+            </form>
+
+            <p class="text-center mt-4 mb-0" style="font-size:14px;">
+                Already registered? <a href="<?= BASE_URL ?>/auth/login.php">Sign in</a>
+            </p>
+        </div>
+    </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="<?= BASE_URL ?>/assets/js/script.js"></script>
+</body>
+</html>

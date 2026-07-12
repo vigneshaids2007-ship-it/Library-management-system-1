@@ -1,0 +1,230 @@
+<?php
+/**
+ * admin/students.php
+ * ---------------------------------------------------------------------
+ * Admin management of student accounts: create, edit, block/unblock.
+ * Uses a modal form for add/edit; password is optional on edit
+ * (leave blank to keep the current one).
+ * ---------------------------------------------------------------------
+ */
+require_once __DIR__ . '/../config/config.php';
+require_role('admin');
+
+$page_title = 'Students';
+$active_nav = 'students';
+$errors = [];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!csrf_verify($_POST['csrf_token'] ?? '')) {
+        set_flash('error', 'Invalid request token.');
+        header('Location: ' . BASE_URL . '/admin/students.php');
+        exit;
+    }
+    $action = $_POST['action'] ?? '';
+
+    if ($action === 'save') {
+        $id = (int)($_POST['user_id'] ?? 0);
+        $name = trim($_POST['full_name'] ?? '');
+        $email = trim($_POST['email'] ?? '');
+        $phone = trim($_POST['phone'] ?? '');
+        $roll = trim($_POST['roll_number'] ?? '');
+        $password = $_POST['password'] ?? '';
+
+        if ($name === '' || $email === '') {
+            $errors[] = 'Name and email are required.';
+        }
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $errors[] = 'Please enter a valid email.';
+        }
+        if (!$id && strlen($password) < 6) {
+            $errors[] = 'Password must be at least 6 characters for a new account.';
+        }
+
+        if (!$errors) {
+            $dupe = $pdo->prepare("SELECT user_id FROM users WHERE email = ? AND user_id != ?");
+            $dupe->execute([$email, $id]);
+            if ($dupe->fetch()) $errors[] = 'Another account already uses this email.';
+        }
+
+        if (!$errors) {
+            if ($id) {
+                if ($password !== '') {
+                    $hash = password_hash($password, PASSWORD_BCRYPT);
+                    $pdo->prepare("UPDATE users SET full_name=?, email=?, phone=?, roll_number=?, password=? WHERE user_id=?")
+                        ->execute([$name, $email, $phone, $roll, $hash, $id]);
+                } else {
+                    $pdo->prepare("UPDATE users SET full_name=?, email=?, phone=?, roll_number=? WHERE user_id=?")
+                        ->execute([$name, $email, $phone, $roll, $id]);
+                }
+                set_flash('success', 'Student updated.');
+            } else {
+                $hash = password_hash($password, PASSWORD_BCRYPT);
+                $pdo->prepare("INSERT INTO users (full_name, email, password, role, phone, roll_number, status)
+                               VALUES (?, ?, ?, 'student', ?, ?, 'active')")
+                    ->execute([$name, $email, $hash, $phone, $roll]);
+                set_flash('success', 'Student account created.');
+            }
+            header('Location: ' . BASE_URL . '/admin/students.php');
+            exit;
+        }
+    } elseif ($action === 'toggle_status') {
+        $id = (int)($_POST['user_id'] ?? 0);
+        $stmt = $pdo->prepare("SELECT status FROM users WHERE user_id=?");
+        $stmt->execute([$id]);
+        $cur = $stmt->fetchColumn();
+        $new = $cur === 'active' ? 'blocked' : 'active';
+        $pdo->prepare("UPDATE users SET status=? WHERE user_id=?")->execute([$new, $id]);
+        set_flash('success', 'Student ' . ($new === 'blocked' ? 'blocked' : 'unblocked') . '.');
+        header('Location: ' . BASE_URL . '/admin/students.php');
+        exit;
+    } elseif ($action === 'delete') {
+        $id = (int)($_POST['user_id'] ?? 0);
+        $active = $pdo->prepare("SELECT COUNT(*) FROM book_issues WHERE user_id=? AND status='issued'");
+        $active->execute([$id]);
+        if ($active->fetchColumn() > 0) {
+            set_flash('error', 'Cannot delete: this student has books currently issued.');
+        } else {
+            $pdo->prepare("DELETE FROM users WHERE user_id=? AND role='student'")->execute([$id]);
+            set_flash('success', 'Student account deleted.');
+        }
+        header('Location: ' . BASE_URL . '/admin/students.php');
+        exit;
+    }
+}
+
+$q = trim($_GET['q'] ?? '');
+$sql = "SELECT u.*,
+        (SELECT COUNT(*) FROM book_issues bi WHERE bi.user_id = u.user_id AND bi.status='issued') AS active_loans,
+        (SELECT COALESCE(SUM(amount),0) FROM fines f WHERE f.user_id = u.user_id AND f.status='unpaid') AS unpaid_fines
+        FROM users u WHERE u.role = 'student'";
+$params = [];
+if ($q !== '') {
+    $sql .= " AND (u.full_name LIKE ? OR u.email LIKE ? OR u.roll_number LIKE ?)";
+    $like = "%$q%";
+    array_push($params, $like, $like, $like);
+}
+$sql .= " ORDER BY u.created_at DESC";
+$stmt = $pdo->prepare($sql);
+$stmt->execute($params);
+$students = $stmt->fetchAll();
+
+require_once __DIR__ . '/../includes/header.php';
+?>
+
+<div class="panel">
+    <div class="panel-title">
+        <span>Students <span class="text-muted-ink" style="font-size:13px; font-weight:400;">(<?= count($students) ?>)</span></span>
+        <button class="btn btn-brass btn-sm" data-bs-toggle="modal" data-bs-target="#stuModal" onclick="openStuModal()"><i class="fa-solid fa-user-plus"></i> Add Student</button>
+    </div>
+
+    <?php foreach ($errors as $err): ?>
+        <div class="alert alert-danger app-alert"><?= h($err) ?></div>
+    <?php endforeach; ?>
+
+    <form method="GET" class="mb-3">
+        <input type="text" name="q" class="form-control" style="max-width:360px;" placeholder="Search by name, email, or roll no…" value="<?= h($q) ?>">
+    </form>
+
+    <?php if (!$students): ?>
+        <div class="empty-state"><i class="fa-solid fa-user-graduate"></i>No students found.</div>
+    <?php else: ?>
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead><tr><th>Name</th><th>Email</th><th>Roll no.</th><th>Active loans</th><th>Unpaid fines</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+            <?php foreach ($students as $s): ?>
+                <tr>
+                    <td style="font-weight:600;"><?= h($s['full_name']) ?></td>
+                    <td><?= h($s['email']) ?></td>
+                    <td><?= h($s['roll_number'] ?: '—') ?></td>
+                    <td><?= (int)$s['active_loans'] ?></td>
+                    <td><?= $s['unpaid_fines'] > 0 ? '<span class="badge-soft badge-overdue">' . money($s['unpaid_fines']) . '</span>' : '<span class="text-muted-ink">—</span>' ?></td>
+                    <td>
+                        <?php if ($s['status'] === 'active'): ?>
+                            <span class="badge-soft badge-available">Active</span>
+                        <?php else: ?>
+                            <span class="badge-soft badge-outstock">Blocked</span>
+                        <?php endif; ?>
+                    </td>
+                    <td class="text-end" style="white-space:nowrap;">
+                        <button class="btn btn-sm btn-outline-ink" data-bs-toggle="modal" data-bs-target="#stuModal"
+                            onclick='openStuModal(<?= json_encode($s) ?>)'><i class="fa-solid fa-pen"></i></button>
+                        <form method="POST" class="d-inline">
+                            <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+                            <input type="hidden" name="action" value="toggle_status">
+                            <input type="hidden" name="user_id" value="<?= $s['user_id'] ?>">
+                            <button class="btn btn-sm btn-outline-ink"><i class="fa-solid fa-<?= $s['status']==='active' ? 'lock' : 'lock-open' ?>"></i></button>
+                        </form>
+                        <form method="POST" class="d-inline" data-confirm="Delete student '<?= h($s['full_name']) ?>'? This cannot be undone.">
+                            <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+                            <input type="hidden" name="action" value="delete">
+                            <input type="hidden" name="user_id" value="<?= $s['user_id'] ?>">
+                            <button class="btn btn-sm btn-outline-ink text-danger"><i class="fa-solid fa-trash"></i></button>
+                        </form>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php endif; ?>
+</div>
+
+<div class="modal fade" id="stuModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content" style="border-radius:12px;">
+      <form method="POST">
+        <div class="modal-header">
+          <h5 class="modal-title font-display" id="stuModalTitle">Add Student</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+          <input type="hidden" name="action" value="save">
+          <input type="hidden" name="user_id" id="stu_id" value="">
+          <div class="mb-3">
+            <label class="form-label">Full name</label>
+            <input type="text" name="full_name" id="stu_name" class="form-control" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Email</label>
+            <input type="email" name="email" id="stu_email" class="form-control" required>
+          </div>
+          <div class="row">
+            <div class="col-6 mb-3">
+                <label class="form-label">Phone</label>
+                <input type="text" name="phone" id="stu_phone" class="form-control">
+            </div>
+            <div class="col-6 mb-3">
+                <label class="form-label">Roll no.</label>
+                <input type="text" name="roll_number" id="stu_roll" class="form-control">
+            </div>
+          </div>
+          <div class="mb-1">
+            <label class="form-label">Password <span id="stu_pw_hint" class="text-muted-ink" style="text-transform:none;font-weight:400;"></span></label>
+            <input type="password" name="password" id="stu_pw" class="form-control" minlength="6">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-ink" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-brass">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+function openStuModal(s) {
+    document.getElementById('stuModalTitle').textContent = s ? 'Edit Student' : 'Add Student';
+    document.getElementById('stu_id').value = s ? s.user_id : '';
+    document.getElementById('stu_name').value = s ? s.full_name : '';
+    document.getElementById('stu_email').value = s ? s.email : '';
+    document.getElementById('stu_phone').value = s && s.phone ? s.phone : '';
+    document.getElementById('stu_roll').value = s && s.roll_number ? s.roll_number : '';
+    document.getElementById('stu_pw').value = '';
+    document.getElementById('stu_pw_hint').textContent = s ? '(leave blank to keep current)' : '(min. 6 characters)';
+}
+</script>
+
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>

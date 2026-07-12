@@ -1,0 +1,100 @@
+<?php
+/**
+ * student/dashboard.php
+ * ---------------------------------------------------------------------
+ * Student landing page: a quick snapshot of their loans and fines.
+ * ---------------------------------------------------------------------
+ */
+require_once __DIR__ . '/../config/config.php';
+require_role('student');
+sync_overdue_fines($pdo);
+
+$page_title = 'Dashboard';
+$active_nav = 'dashboard';
+$uid = $_SESSION['user_id'];
+
+$active_loans = $pdo->prepare("SELECT COUNT(*) FROM book_issues WHERE user_id=? AND status='issued'");
+$active_loans->execute([$uid]);
+$active_loans = $active_loans->fetchColumn();
+
+$overdue_count = $pdo->prepare("SELECT COUNT(*) FROM book_issues WHERE user_id=? AND status='issued' AND due_date < CURDATE()");
+$overdue_count->execute([$uid]);
+$overdue_count = $overdue_count->fetchColumn();
+
+$books_read = $pdo->prepare("SELECT COUNT(*) FROM book_issues WHERE user_id=? AND status='returned'");
+$books_read->execute([$uid]);
+$books_read = $books_read->fetchColumn();
+
+$unpaid_fine = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM fines WHERE user_id=? AND status='unpaid'");
+$unpaid_fine->execute([$uid]);
+$unpaid_fine = $unpaid_fine->fetchColumn();
+
+$current_loans = $pdo->prepare("
+    SELECT bi.*, b.title, b.isbn, b.cover_color, a.author_name
+    FROM book_issues bi
+    JOIN books b ON b.book_id = bi.book_id
+    LEFT JOIN authors a ON a.author_id = b.author_id
+    WHERE bi.user_id = ? AND bi.status = 'issued'
+    ORDER BY bi.due_date ASC
+");
+$current_loans->execute([$uid]);
+$current_loans = $current_loans->fetchAll();
+
+require_once __DIR__ . '/../includes/header.php';
+?>
+
+<div class="stat-grid mb-4">
+    <div class="stat-card accent-ink">
+        <div class="stat-label">Books on loan</div>
+        <div class="stat-value"><?= $active_loans ?></div>
+    </div>
+    <div class="stat-card accent-terracotta">
+        <div class="stat-label">Overdue</div>
+        <div class="stat-value"><?= $overdue_count ?></div>
+    </div>
+    <div class="stat-card accent-sage">
+        <div class="stat-label">Books read</div>
+        <div class="stat-value"><?= $books_read ?></div>
+    </div>
+    <div class="stat-card accent-brass">
+        <div class="stat-label">Unpaid fines</div>
+        <div class="stat-value"><?= money($unpaid_fine) ?></div>
+    </div>
+</div>
+
+<div class="panel">
+    <div class="panel-title">
+        <span>Currently borrowed</span>
+        <a href="<?= BASE_URL ?>/student/browse_books.php" class="btn btn-brass btn-sm"><i class="fa-solid fa-magnifying-glass"></i> Browse books</a>
+    </div>
+
+    <?php if (!$current_loans): ?>
+        <div class="empty-state"><i class="fa-solid fa-book-open"></i>You don't have any books checked out right now.</div>
+    <?php else: ?>
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead><tr><th>Book</th><th>Issued</th><th>Due</th><th>Status</th></tr></thead>
+            <tbody>
+            <?php foreach ($current_loans as $l): ?>
+                <tr>
+                    <td>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <span style="width:6px;height:26px;border-radius:3px;background:<?= h($l['cover_color']) ?>;display:inline-block;"></span>
+                            <div>
+                                <div style="font-weight:600;"><?= h($l['title']) ?></div>
+                                <div class="text-muted-ink" style="font-size:12px;"><?= h($l['author_name'] ?? '') ?></div>
+                            </div>
+                        </div>
+                    </td>
+                    <td class="due-date"><?= h($l['issue_date']) ?></td>
+                    <td class="due-date"><?= h($l['due_date']) ?></td>
+                    <td><?= due_status_badge($l['due_date'], $l['status']) ?></td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php endif; ?>
+</div>
+
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>
