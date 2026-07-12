@@ -1,0 +1,150 @@
+<?php
+/**
+ * admin/issue_book.php
+ * ---------------------------------------------------------------------
+ * Issues an available book copy to a student:
+ *  - decrements books.available_copies
+ *  - creates a book_issues row with due_date = today + LOAN_PERIOD_DAYS
+ * A student may not have more than one active issue of the same title,
+ * and blocked students cannot be issued books.
+ * ---------------------------------------------------------------------
+ */
+require_once __DIR__ . '/../config/config.php';
+require_role('admin');
+
+$page_title = 'Issue Book';
+$active_nav = 'issue';
+$errors = [];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!csrf_verify($_POST['csrf_token'] ?? '')) {
+        $errors[] = 'Invalid request token.';
+    }
+    $book_id = (int)($_POST['book_id'] ?? 0);
+    $user_id = (int)($_POST['user_id'] ?? 0);
+
+    if (!$errors) {
+        $bookStmt = $pdo->prepare("SELECT * FROM books WHERE book_id = ?");
+        $bookStmt->execute([$book_id]);
+        $book = $bookStmt->fetch();
+
+        $userStmt = $pdo->prepare("SELECT * FROM users WHERE user_id = ? AND role = 'student'");
+        $userStmt->execute([$user_id]);
+        $student = $userStmt->fetch();
+
+        if (!$book || !$student) {
+            $errors[] = 'Please select a valid book and student.';
+        } elseif ($book['available_copies'] < 1) {
+            $errors[] = 'No available copies of this book right now.';
+        } elseif ($student['status'] === 'blocked') {
+            $errors[] = 'This student account is blocked and cannot borrow books.';
+        } else {
+            $dup = $pdo->prepare("SELECT COUNT(*) FROM book_issues WHERE book_id=? AND user_id=? AND status='issued'");
+            $dup->execute([$book_id, $user_id]);
+            if ($dup->fetchColumn() > 0) {
+                $errors[] = 'This student already has an active loan of this title.';
+            }
+        }
+
+        if (!$errors) {
+            $pdo->beginTransaction();
+            try {
+                $issueDate = new DateTime('today');
+                $dueDate = (clone $issueDate)->modify('+' . LOAN_PERIOD_DAYS . ' days');
+
+                $ins = $pdo->prepare("INSERT INTO book_issues (book_id, user_id, issue_date, due_date, status, issued_by)
+                                       VALUES (?, ?, ?, ?, 'issued', ?)");
+                $ins->execute([$book_id, $user_id, $issueDate->format('Y-m-d'), $dueDate->format('Y-m-d'), $_SESSION['user_id']]);
+
+                $upd = $pdo->prepare("UPDATE books SET available_copies = available_copies - 1 WHERE book_id = ?");
+                $upd->execute([$book_id]);
+
+                $pdo->commit();
+                set_flash('success', '"' . $book['title'] . '" issued to ' . $student['full_name'] . '. Due ' . $dueDate->format('d M Y') . '.');
+                header('Location: ' . BASE_URL . '/admin/issue_book.php');
+                exit;
+            } catch (Exception $e) {
+                $pdo->rollBack();
+                $errors[] = 'Something went wrong while issuing the book. Please try again.';
+            }
+        }
+    }
+}
+
+$available_books = $pdo->query("
+    SELECT b.*, a.author_name FROM books b
+    LEFT JOIN authors a ON a.author_id = b.author_id
+    WHERE b.available_copies > 0 ORDER BY b.title
+")->fetchAll();
+
+$students = $pdo->query("SELECT * FROM users WHERE role='student' AND status='active' ORDER BY full_name")->fetchAll();
+
+require_once __DIR__ . '/../includes/header.php';
+?>
+
+<div class="row g-4">
+    <div class="col-lg-6">
+        <div class="panel">
+            <div class="panel-title"><span>Issue a book</span></div>
+
+            <?php foreach ($errors as $err): ?>
+                <div class="alert alert-danger app-alert"><?= h($err) ?></div>
+            <?php endforeach; ?>
+
+            <form method="POST" class="needs-validation" novalidate>
+                <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+                <div class="mb-3">
+                    <label class="form-label">Student</label>
+                    <select name="user_id" class="form-select" required>
+                        <option value="">— Select a student —</option>
+                        <?php foreach ($students as $s): ?>
+                            <option value="<?= $s['user_id'] ?>"><?= h($s['full_name']) ?> (<?= h($s['roll_number'] ?: $s['email']) ?>)</option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="invalid-feedback">Please select a student.</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Book</label>
+                    <select name="book_id" class="form-select" required>
+                        <option value="">— Select an available book —</option>
+                        <?php foreach ($available_books as $b): ?>
+                            <option value="<?= $b['book_id'] ?>"><?= h($b['title']) ?> — <?= h($b['author_name'] ?? 'Unknown') ?> (<?= $b['available_copies'] ?> left)</option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="invalid-feedback">Please select a book.</div>
+                </div>
+                <p class="text-muted-ink" style="font-size:12.5px;">
+                    <i class="fa-solid fa-circle-info"></i> Loan period is <?= LOAN_PERIOD_DAYS ?> days from today.
+                    A fine of <?= money(FINE_PER_DAY) ?>/day applies after the due date.
+                </p>
+                <button type="submit" class="btn btn-brass"><i class="fa-solid fa-right-left"></i> Issue Book</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="panel mb-0">
+            <div class="panel-title"><span>Available right now</span></div>
+            <?php if (!$available_books): ?>
+                <div class="empty-state"><i class="fa-solid fa-book"></i>No books currently available.</div>
+            <?php else: ?>
+            <div class="table-responsive" style="max-height:420px; overflow:auto;">
+                <table class="table table-hover">
+                    <thead><tr><th>Title</th><th>Author</th><th>Copies</th></tr></thead>
+                    <tbody>
+                    <?php foreach ($available_books as $b): ?>
+                        <tr>
+                            <td><?= h($b['title']) ?></td>
+                            <td class="text-muted-ink"><?= h($b['author_name'] ?? '—') ?></td>
+                            <td><span class="badge-soft badge-available"><?= $b['available_copies'] ?> left</span></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
+        </div>
+    </div>
+</div>
+
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>
