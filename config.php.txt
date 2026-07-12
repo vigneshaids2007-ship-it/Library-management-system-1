@@ -1,0 +1,25 @@
+<?php
+/**
+ * config.php
+ * ---------------------------------------------------------------------
+ * Global application configuration. Included on every page.
+ * ---------------------------------------------------------------------
+ */
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+error_reporting(E_ALL);
+ini_set('display_errors', 0); // set to 1 while developing
+
+// Base URL of the app - adjust if you deploy in a sub-folder
+define('BASE_URL', '/library-management-system');
+
+// Fine calculation
+define('FINE_PER_DAY', 5.00);      // currency units charged per day overdue
+define('LOAN_PERIOD_DAYS', 14);    // default borrowing period
+define('MAX_RENEWALS', 2);         // how many times a book can be renewed
+
+require_once __DIR__ . '/database.php';
+require_once __DIR__ . '/../includes/functions.php';
